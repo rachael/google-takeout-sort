@@ -1,0 +1,61 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "takeout-sort"
+version = "0.1.0"
+description = "Sort a Google Photos library exported via Google Takeout into a clean, well-organised folder structure"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+keywords = ["google-photos", "google-takeout", "photos", "organizer"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Graphics",
+    "Topic :: Utilities",
+]
+
+dependencies = [
+    "click>=8.1",
+    "rich>=13.0",
+    "Pillow>=10.0",
+    "piexif>=1.1.3",
+    "playwright>=1.40",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "ruff>=0.3",
+]
+
+[project.scripts]
+takeout-sort = "takeout_sort.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/rachael/google-takeout-sort"
+"Bug Tracker" = "https://github.com/rachael/google-takeout-sort/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["takeout_sort*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v"
