@@ -117,6 +117,14 @@ _headless_option = click.option(
     "--headless", is_flag=True, default=False,
     help="Run browser in headless mode (no visible window). Requires --auth=browser.",
 )
+_google_metadata_option = click.option(
+    "--google-metadata/--no-google-metadata",
+    default=True,
+    help=(
+        "Include Google-specific fields in XMP sidecars (default). "
+        "Use --no-google-metadata to omit them (e.g. the Google Photos source URL)."
+    ),
+)
 _db_option = click.option(
     "--db", "db_path",
     default=None, type=click.Path(),
@@ -159,6 +167,7 @@ def main():
 @_albums_option
 @_zip_cleanup_option
 @_headless_option
+@_google_metadata_option
 @_db_option
 def run(
     destination,
@@ -169,6 +178,7 @@ def run(
     albums_in_library,
     zip_cleanup,
     headless,
+    google_metadata,
     db_path,
 ):
     """
@@ -197,7 +207,7 @@ def run(
 
     # Phase 3 — organise
     _phase_organise(dest, db, depth=depth, albums_in_library=albums_in_library,
-                    zip_cleanup=zip_cleanup)
+                    include_google_metadata=google_metadata, zip_cleanup=zip_cleanup)
 
     _print_summary(db, dest)
 
@@ -244,8 +254,9 @@ def download(destination, url, auth, cdp_port, zip_cleanup, headless, db_path):
 @_depth_option
 @_albums_option
 @_zip_cleanup_option
+@_google_metadata_option
 @_db_option
-def organize(source, destination, depth, albums_in_library, zip_cleanup, db_path):
+def organize(source, destination, depth, albums_in_library, zip_cleanup, google_metadata, db_path):
     """
     Index and organise an already-downloaded Takeout export.
 
@@ -270,7 +281,7 @@ def organize(source, destination, depth, albums_in_library, zip_cleanup, db_path
 
     _phase_index(src, db, zip_cleanup=zip_cleanup)
     _phase_organise(dest, db, depth=depth, albums_in_library=albums_in_library,
-                    zip_cleanup=zip_cleanup)
+                    include_google_metadata=google_metadata, zip_cleanup=zip_cleanup)
 
     _print_summary(db, dest)
 
@@ -531,6 +542,7 @@ def _phase_organise(
     conn,
     depth: str = "day",
     albums_in_library: bool = True,
+    include_google_metadata: bool = True,
     zip_cleanup: str = "immediate",
 ) -> None:
     console.rule("[bold]Phase 3 — Organise[/bold]")
@@ -560,6 +572,7 @@ def _phase_organise(
             dest,
             depth=folder_depth,
             albums_in_library=albums_in_library,
+            include_google_metadata=include_google_metadata,
             progress_cb=prog_cb,
         )
 

@@ -69,6 +69,7 @@ def organise(
     *,
     depth: FolderDepth = FolderDepth.DAY,
     albums_in_library: bool = True,
+    include_google_metadata: bool = True,
     link_strategy: LinkStrategy | None = None,  # None → auto-detect
     progress_cb: Callable[[str, int, int], None] | None = None,
 ) -> None:
@@ -87,6 +88,9 @@ def organise(
         If True, every photo appears in Library/ regardless of album membership.
         If False, photos that belong to at least one album are placed ONLY in
         their album folder(s); Library/ only holds album-less photos.
+    include_google_metadata
+        When False, Google-specific fields (e.g. the Google Photos source URL)
+        are omitted from XMP sidecars.
     link_strategy
         Override the auto-detected link strategy (HARD/SYMLINK/COPY).
     progress_cb
@@ -114,6 +118,7 @@ def organise(
             albums_dir=albums_dir,
             depth=depth,
             albums_in_library=albums_in_library,
+            include_google_metadata=include_google_metadata,
             link_strategy=link_strategy,
         )
 
@@ -133,6 +138,7 @@ def _organise_photo(
     albums_dir: Path,
     depth: FolderDepth,
     albums_in_library: bool,
+    include_google_metadata: bool,
     link_strategy: LinkStrategy | None,
 ) -> None:
     photo_id = row["id"]
@@ -170,7 +176,7 @@ def _organise_photo(
         return
 
     # Write metadata sidecar + embed EXIF.
-    apply_metadata(primary_dst, meta)
+    apply_metadata(primary_dst, meta, include_google_metadata=include_google_metadata)
 
     # Record final path.
     conn.execute(

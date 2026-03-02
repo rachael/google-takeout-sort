@@ -201,11 +201,22 @@ def _people_block(people: list[str]) -> str:
     )
 
 
-def write_xmp_sidecar(photo_path: Path, meta: PhotoMeta) -> Path:
+def write_xmp_sidecar(
+    photo_path: Path,
+    meta: PhotoMeta,
+    include_google_metadata: bool = True,
+) -> Path:
     """
     Write a ``.xmp`` sidecar file next to *photo_path* and return its path.
 
     The sidecar uses the same stem as the photo: ``photo.jpg`` → ``photo.xmp``.
+
+    Parameters
+    ----------
+    include_google_metadata
+        When False, Google-specific fields (the Google Photos source URL stored
+        in ``dc:source``) are omitted from the sidecar.  All standard fields
+        (date, GPS, title, description, people) are always written.
     """
     xmp_path = photo_path.with_suffix(".xmp")
 
@@ -226,7 +237,7 @@ def write_xmp_sidecar(photo_path: Path, meta: PhotoMeta) -> Path:
         )
 
     url_b = ""
-    if meta.google_url:
+    if include_google_metadata and meta.google_url:
         url_b = (
             "\n      <dc:source>"
             f"{xml_escape(meta.google_url)}"
@@ -320,7 +331,11 @@ def embed_exif(photo_path: Path, meta: PhotoMeta) -> bool:
 # Convenience: apply all metadata to an organised photo
 # ---------------------------------------------------------------------------
 
-def apply_metadata(photo_path: Path, meta: PhotoMeta) -> None:
+def apply_metadata(
+    photo_path: Path,
+    meta: PhotoMeta,
+    include_google_metadata: bool = True,
+) -> None:
     """Write XMP sidecar and attempt EXIF embedding for *photo_path*."""
-    write_xmp_sidecar(photo_path, meta)
+    write_xmp_sidecar(photo_path, meta, include_google_metadata=include_google_metadata)
     embed_exif(photo_path, meta)
