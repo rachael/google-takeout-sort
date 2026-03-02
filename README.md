@@ -154,6 +154,8 @@ takeout-sort status ~/Photos
 | `--no-albums-in-library` | — | Exclude album photos from `Library/`; they live only in `Albums/` |
 | `--zip-cleanup immediate\|after\|keep` | `immediate` | When to delete original ZIPs (see below) |
 | `--headless` | off | Run Playwright in headless mode |
+| `--google-metadata` | ✓ (on) | Include Google-specific fields in XMP sidecars (e.g. the Google Photos source URL) |
+| `--no-google-metadata` | — | Omit Google-specific fields from XMP sidecars |
 | `--db PATH` | `<dest>/.takeout-sort/index.db` | Custom SQLite database path |
 
 ---
@@ -233,7 +235,7 @@ XMP sidecars are read natively by:
 
 ---
 
-## Large libraries (20 TB+)
+## Large libraries
 
 `takeout-sort` is designed to handle very large exports:
 
@@ -319,6 +321,43 @@ pytest
 # Lint
 ruff check takeout_sort tests
 ```
+
+---
+
+## Utility scripts
+
+### `scripts/delete_from_google_photos.py`
+
+After you have verified that your local library is complete, this script
+deletes the corresponding photos from Google Photos (cloud) using the URLs
+recorded in the takeout-sort database.
+
+> **Google's API no longer supports deletion.**  The script automates the
+> Google Photos web interface via Playwright instead.
+
+```bash
+# Always do a dry run first
+python scripts/delete_from_google_photos.py ~/Photos/.takeout-sort/index.db --dry-run
+
+# Delete everything (prompts for confirmation)
+python scripts/delete_from_google_photos.py ~/Photos/.takeout-sort/index.db
+
+# Delete up to 50 photos, 2 s apart, using an existing Chrome session
+python scripts/delete_from_google_photos.py ~/Photos/.takeout-sort/index.db \
+    --limit 50 --delay 2 --auth attach
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--dry-run` | off | List photos that would be deleted without actually deleting |
+| `--auth browser\|attach` | `browser` | Auth method (same as main CLI) |
+| `--cdp-port PORT` | `9222` | DevTools port for `--auth=attach` |
+| `--delay SECS` | `1.5` | Seconds between deletions (avoid rate-limiting) |
+| `--limit N` | unlimited | Stop after N deletions |
+| `--headless` | off | Run browser headlessly |
+
+Only photos that had a `google_url` in their Takeout JSON sidecar can be
+targeted.  Photos without a recorded URL are reported but skipped.
 
 ---
 
