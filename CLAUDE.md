@@ -559,3 +559,104 @@ For upserts: return the existing row's id (or a sentinel like `-1`) so the
 caller knows whether an insert or an ignore occurred.  Log at DEBUG level
 which branch was taken.  This costs almost nothing and saves hours of
 debugging.
+
+---
+
+## What actually slowed things down — honest retrospective
+
+These are the specific mistakes made during this project that cost real time.
+They are documented bluntly so future agents (and humans) can avoid them.
+
+---
+
+### R1. The UNIQUE constraint was missing from the schema from the start
+
+**What happened:** `upsert_photo` used `INSERT OR IGNORE` but `source_path`
+had no UNIQUE constraint.  The `test_upsert_photo_idempotent` test failed
+because the second insert created a new row with a different `id` instead of
+being ignored.
+
+**Time lost:** One full debugging cycle: read the failing assertion, read the
+schema, realise the constraint was missing, add it, re-run.
+
+**How to avoid it:** Whenever you write `INSERT OR IGNORE`, immediately ask
+"what UNIQUE constraint makes this ignore meaningful?" and verify it exists
+in the schema before writing any tests.
+
+---
+
+### R2. The implicit SQLite transaction wasn't considered when writing test fixtures
+
+**What happened:** A test fixture called `upsert_photo()` (which runs INSERT),
+then the helper under test called `conn.execute("BEGIN")`.  Python's `sqlite3`
+had already opened an implicit transaction after the INSERT, so the explicit
+`BEGIN` raised `OperationalError: cannot start a transaction within a transaction`.
+
+**Time lost:** The error message was clear but the root cause (implicit
+transaction from a *previous* DML in the fixture) was non-obvious.
+
+**How to avoid it:** Every time you write a test fixture that runs DML, add
+`conn.commit()` at the end of the setup block.  Make this a habit, not an
+afterthought.  Alternatively, open the connection with `isolation_level=None`
+(autocommit) if you don't need transaction semantics in tests.
+
+---
+
+### R3. Album membership transfer in `compute_hashes()` was an afterthought
+
+**What happened:** The organiser's `--no-albums-in-library` flag was
+implemented and tested, but the test only worked because both photo copies
+happened to share the same album row at test time.  In the real fixture
+(year-folder copy + album-folder copy), the *canonical* row (year-folder)
+had no album membership — only the *skipped* row (album-folder copy) did.
+The feature was silently broken until `test_organise_albums_in_library_false`
+was written with a proper two-copy fixture.
+
+**Time lost:** The bug was invisible until the end-to-end test was written.
+Fixing it required understanding the deduplication flow deeply and adding a
+`photo_albums` transfer step inside `compute_hashes()`.
+
+**How to avoid it:** When designing a deduplication step that marks rows as
+"skipped", immediately ask: "what data on the skipped row needs to be
+transferred to the canonical row before the skipped row is ignored?"  Write
+that transfer *before* any code that depends on the canonical row being
+complete.
+
+---
+
+### R4. The `pyproject.toml` build backend was wrong
+
+**What happened:** Used `"setuptools.backends.legacy:build"` as the
+`build-backend` value.  `pip install -e .` failed immediately with a
+"cannot import build backend" error.  The correct value is
+`"setuptools.build_meta"`.
+
+**Time lost:** Small, but requires knowing the right string.
+
+**How to avoid it:** When scaffolding a new Python package, copy the
+`[build-system]` block from a known-working `pyproject.toml`.  The correct
+block for setuptools is:
+
+```toml
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+```
+
+---
+
+### R5. `_confirm_no_google_metadata()` logic was inverted on first attempt
+
+**What happened:** The confirmation function returned `True` to mean "strip
+metadata" (keep the flag) and `False` to mean "include metadata" (override
+the flag).  The call site then had a confusing double-negation:
+`include_meta = not _confirm(...)`.  On first pass this was wired backwards,
+causing the flag to have the opposite effect.
+
+**Time lost:** One re-read and logic-trace to spot the inversion.
+
+**How to avoid it:** Name confirmation functions to return what the caller
+actually passes forward.  `_confirm_no_google_metadata() -> bool` returning
+`True` for "strip" is confusing.  Better: name it `_should_include_google_metadata()`
+returning `True` for "include", so the call site is `include_meta = _should_include_google_metadata()`
+with no negation.  The function name should match the variable it populates.
