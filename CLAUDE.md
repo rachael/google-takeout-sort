@@ -237,3 +237,245 @@ tests/
 
 5. **`upsert_photo` returns -1** when the row already exists (INSERT OR IGNORE
    was suppressed); callers should handle this sentinel value.
+
+---
+
+## General rules and transferable patterns
+
+These lessons came out of building this project but apply broadly to any
+software agent, automated pipeline, or CLI tool.  They are written to be
+useful to future agents regardless of project or language.
+
+---
+
+### 1. `INSERT OR IGNORE` is only idempotent when a UNIQUE constraint exists
+
+If you want "insert if not already there" semantics, the database must have
+a UNIQUE (or PRIMARY KEY) constraint on the column(s) that define uniqueness.
+Without it, `INSERT OR IGNORE` inserts every time and creates silent duplicates.
+
+**Always pair `INSERT OR IGNORE` / `ON CONFLICT DO NOTHING` with an explicit
+UNIQUE constraint.**  This applies to PostgreSQL, SQLite, and MySQL alike.
+
+---
+
+### 2. Python's `sqlite3` opens implicit transactions — and they bite you
+
+Python's `sqlite3` module automatically begins a transaction after any DML
+(INSERT, UPDATE, DELETE) unless `isolation_level=None`.  If you then call
+`conn.execute("BEGIN")` you get:
+
+```
+sqlite3.OperationalError: cannot start a transaction within a transaction
+```
+
+**Rule:** After any DML, call `conn.commit()` or `conn.rollback()` before
+issuing another explicit `BEGIN`.  In tests, always commit between setup
+steps and the code under test.  In production code, prefer a context-manager
+(`with transaction(conn):`) that handles `BEGIN`/`COMMIT`/`ROLLBACK`
+automatically so callers never need to think about this.
+
+---
+
+### 3. Design for resumability from day one with a status column
+
+Any pipeline that processes large datasets (files, API records, database rows)
+should track each item's state in a persistent store from the start.  A simple
+status column (`discovered → indexed → organised`) gives you:
+
+- Free resumability: re-run and skip already-processed items.
+- Observability: query the DB to see exactly where things stand.
+- Safety: if the process crashes mid-run, nothing is lost.
+
+**Don't rely on filesystem state alone** (e.g., "does the output file exist?").
+The DB is the source of truth.  Write `final_path` back to the DB so you can
+verify the file at any time.
+
+---
+
+### 4. Destructive or irreversible operations require confirmation
+
+Any action the user cannot easily undo (deleting cloud data, stripping
+metadata from files, force-pushing, wiping a cache) deserves:
+
+1. A clear, plain-English warning of exactly what will happen.
+2. An explicit confirmation step (typed `yes`, or a numbered menu choice).
+3. A safe exit if the terminal is non-interactive (CI/pipes).
+4. A `--dry-run` flag where practical.
+
+For non-interactive contexts, either fail loudly (`sys.exit(1)`) or require
+a `--yes` / `--force` flag that the caller must pass deliberately.  Silent
+no-ops are the worst outcome: the user thinks something happened but it didn't.
+
+---
+
+### 5. Thread flags all the way down — don't use globals
+
+When a feature flag or option affects behaviour deep in a call stack, pass it
+explicitly through every layer rather than storing it in a global or module-
+level variable.  This makes the code testable (each layer can be tested with
+either value independently), grep-able (one search finds every affected site),
+and safe for concurrent use.
+
+```
+cli → organise(include_google_metadata=...)
+    → _organise_photo(include_google_metadata=...)
+      → apply_metadata(include_google_metadata=...)
+        → write_xmp_sidecar(include_google_metadata=...)
+```
+
+If passing the flag 5 levels deep feels painful, it is a sign the function
+hierarchy is too deep — consider a config/options dataclass instead of a
+growing parameter list.
+
+---
+
+### 6. Detect capabilities at runtime; fall back gracefully
+
+Hard links, symlinks, and EXIF embedding all depend on OS and filesystem
+capabilities.  Probe them once at startup (check `st_dev`, try-except a test
+link) and store the result.  Then apply the best available strategy silently.
+
+```
+hard link → symlink → copy   (file linking)
+EXIF embed → XMP sidecar only   (metadata)
+```
+
+Never fail hard when a fallback exists.  Log the fallback at INFO level so
+power users can see what happened, but don't surface it as an error.
+
+---
+
+### 7. Pre-flight checks before long, space-consuming operations
+
+Before kicking off anything that will write gigabytes of data:
+1. Estimate the required space.
+2. Check available space on the target volume.
+3. If it might be tight, warn the user and offer a choice — not a crash mid-way.
+
+This is especially important for ZIP extraction (the extracted tree can be
+2–3× the ZIP size).  A disk-full mid-extraction leaves partial data and is
+much harder to recover from than a clean pre-flight rejection.
+
+---
+
+### 8. Two-pass pipelines avoid holding everything in memory
+
+For large datasets:
+
+- **Pass 1 (discover):** Walk the source and record items in the DB.
+  No heavy computation.  Fast.  Can be interrupted and resumed.
+- **Pass 2 (process):** Read from the DB in batches, do the heavy work
+  (hashing, moving, API calls), update status.
+
+This decouples discovery from processing, lets you restart either pass
+independently, and avoids loading the entire dataset into RAM.  Batch
+size should be tunable (default 200–500 rows) to balance memory vs. round-trips.
+
+---
+
+### 9. Write the sentinel / error-return value into the function contract
+
+When a function can legally return "nothing was done" (e.g., `INSERT OR IGNORE`
+was suppressed), choose a sentinel value and document it:
+
+```python
+def upsert_photo(...) -> int:
+    """Returns the row id, or -1 if the row already existed."""
+```
+
+Avoid returning `None` for "error" and a valid ID for "success" — callers
+must explicitly check for `None` and it is too easy to treat it as falsy-but-valid.
+A named constant (`ALREADY_EXISTS = -1`) is even better.
+
+---
+
+### 10. Make progress visible; make it optional
+
+Long-running operations should accept a `progress_cb` callback rather than
+printing directly.  This keeps library code free of I/O side-effects and lets
+callers (CLI, GUI, tests) decide how to display progress.
+
+```python
+def compute_hashes(conn, progress_cb=None, batch_size=200):
+    ...
+    if progress_cb:
+        progress_cb(filename, photo_id)
+```
+
+Tests can inject a collecting lambda; the CLI can wire up a Rich progress bar;
+headless runs get nothing.  Never print directly from library functions.
+
+---
+
+### 11. Encode domain knowledge as named constants, not bare literals
+
+Magic numbers and magic strings scatter domain knowledge across the codebase.
+Collect them at the top of the relevant module:
+
+```python
+_JSON_STEM_MAX = 46   # Google Takeout truncates sidecar names at 46 chars
+_YEAR_FOLDER_RE = re.compile(r"^Photos from \d{4}$", re.IGNORECASE)
+```
+
+When a bug is caused by a domain rule (e.g., "why 46?") the answer is one
+grep away instead of buried inside a conditional.
+
+---
+
+### 12. `shutil.copy2` + unlink is not atomic — prefer `os.rename` where possible
+
+`safe_move()` uses `os.rename()` when source and destination are on the same
+filesystem (atomic on POSIX).  Cross-filesystem moves must fall back to
+copy-then-delete.  If a crash happens between copy and delete, you have a
+duplicate — which is safe to clean up but messy.
+
+**Rule:** Always try `rename` first.  Only copy-then-delete when `rename`
+raises `OSError` (cross-device).  Log the fallback.
+
+---
+
+### 13. Sidecar / companion file lookup should be tolerant of edge cases
+
+Real-world data is messier than the spec.  A sidecar-finding function should
+handle, in order:
+
+1. Exact match (`photo.jpg.json`)
+2. Truncated stem (long filenames)
+3. Suffix variants (`-edited`, `(1)`, etc.)
+4. Case-insensitive filesystem differences
+
+Return `None` cleanly — never raise — when no sidecar is found.  The caller
+decides whether a missing sidecar is an error or a normal case.
+
+---
+
+### 14. Document the "why" not just the "what" in persistent agent notes
+
+When writing notes for future agents (like this file), the most valuable thing
+is the reasoning behind non-obvious decisions — not what the code does (the
+code shows that), but *why* it does it that way.
+
+Good: "source_path has a UNIQUE constraint because without it INSERT OR IGNORE
+never ignores anything and idempotency tests fail."
+
+Less useful: "source_path is TEXT NOT NULL UNIQUE."
+
+Future agents (and humans) will reach for the simpler approach and need to know
+why it won't work before they spend time on it.
+
+---
+
+### 15. Playwright / browser automation: authenticate once, reuse the session
+
+Browser automation for authenticated services (Google, etc.) is fragile if
+you try to log in programmatically.  Instead:
+
+- **Launch mode:** Open a real browser window, let the user log in manually,
+  then take over the session via CDP or storage-state serialisation.
+- **Attach mode:** Attach to an already-running Chrome/Edge via `--remote-debugging-port`.
+- **Cookie/storage export:** Serialize `context.storage_state()` to a file
+  and re-use it in subsequent headless runs.
+
+Avoid storing credentials in code or config files.  Let the human do the login
+once; automate everything after authentication.
