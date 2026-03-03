@@ -60,6 +60,57 @@ console = Console()
 
 _TAKEOUT_DOWNLOAD_URL = "https://takeout.google.com/settings/takeout/downloads"
 
+
+# ---------------------------------------------------------------------------
+# --no-google-metadata confirmation prompt
+# ---------------------------------------------------------------------------
+
+def _confirm_no_google_metadata() -> bool:
+    """
+    Warn the user about the consequences of --no-google-metadata and ask how
+    to proceed.
+
+    Returns True  → continue WITHOUT Google metadata in sidecars.
+    Returns False → include Google metadata (override the flag).
+    Calls sys.exit(0) if the user chooses to abort.
+    """
+    console.print(
+        "\n[bold yellow]⚠  --no-google-metadata is active[/bold yellow]\n\n"
+        "Google Photos URLs will [bold]not[/bold] be written to XMP sidecar files.\n\n"
+        "The URL is still stored in the takeout-sort database, so\n"
+        "[cyan]scripts/delete_from_google_photos.py[/cyan] will continue to work —\n"
+        "[bold]but only while the database file exists[/bold].  If the database\n"
+        "is lost or deleted, there will be no way to automatically link local\n"
+        "files back to their Google Photos counterparts.\n"
+    )
+
+    if not sys.stdin.isatty():
+        console.print(
+            "[red]Non-interactive mode: re-run without --no-google-metadata, "
+            "or run interactively to confirm.[/red]"
+        )
+        sys.exit(1)
+
+    console.print(
+        "  [bold][1][/bold]  Continue — skip Google metadata in sidecars  "
+        "([dim]keeps --no-google-metadata[/dim])\n"
+        "  [bold][2][/bold]  Include Google metadata in sidecars           "
+        "([dim]ignores the flag this run[/dim])\n"
+        "  [bold][3][/bold]  Abort\n"
+    )
+    while True:
+        choice = click.prompt("Choice", default="1").strip()
+        if choice == "1":
+            return True   # proceed without Google metadata
+        if choice == "2":
+            console.print("[green]Including Google metadata in sidecars.[/green]\n")
+            return False  # caller should flip include_google_metadata → True
+        if choice == "3":
+            console.print("[yellow]Aborted.[/yellow]")
+            sys.exit(0)
+        console.print("[red]Please enter 1, 2, or 3.[/red]")
+
+
 # ---------------------------------------------------------------------------
 # Shared options
 # ---------------------------------------------------------------------------
@@ -206,8 +257,17 @@ def run(
         console.print("[yellow]No raw/ directory found; skipping index phase.[/yellow]")
 
     # Phase 3 — organise
+    # When --no-google-metadata is set, prompt the user before proceeding.
+    # _confirm_no_google_metadata() returns True  → confirmed strip (keep flag)
+    #                                             False → override: include metadata
+    if not google_metadata:
+        should_strip = _confirm_no_google_metadata()
+        include_meta = not should_strip
+    else:
+        include_meta = True
+
     _phase_organise(dest, db, depth=depth, albums_in_library=albums_in_library,
-                    include_google_metadata=google_metadata, zip_cleanup=zip_cleanup)
+                    include_google_metadata=include_meta, zip_cleanup=zip_cleanup)
 
     _print_summary(db, dest)
 
@@ -280,8 +340,15 @@ def organize(source, destination, depth, albums_in_library, zip_cleanup, google_
     _print_banner(dest)
 
     _phase_index(src, db, zip_cleanup=zip_cleanup)
+
+    if not google_metadata:
+        should_strip = _confirm_no_google_metadata()
+        include_meta = not should_strip
+    else:
+        include_meta = True
+
     _phase_organise(dest, db, depth=depth, albums_in_library=albums_in_library,
-                    include_google_metadata=google_metadata, zip_cleanup=zip_cleanup)
+                    include_google_metadata=include_meta, zip_cleanup=zip_cleanup)
 
     _print_summary(db, dest)
 
