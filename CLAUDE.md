@@ -660,3 +660,125 @@ actually passes forward.  `_confirm_no_google_metadata() -> bool` returning
 `True` for "strip" is confusing.  Better: name it `_should_include_google_metadata()`
 returning `True` for "include", so the call site is `include_meta = _should_include_google_metadata()`
 with no negation.  The function name should match the variable it populates.
+
+---
+
+## Documentation best practices
+
+These are principles for writing good entries in this file — not what to
+document, but *how* to write it so future agents can actually use it.
+
+---
+
+### D1. Write the "why", not the "what"
+
+The code already shows *what* it does.  This file is valuable only when it
+explains *why* a decision was made, especially when the obvious approach is
+wrong:
+
+> "source_path has a UNIQUE constraint because without it INSERT OR IGNORE
+> never ignores anything and idempotency tests fail."
+
+is useful.
+
+> "source_path is TEXT NOT NULL UNIQUE."
+
+is not — that's just repeating the schema.
+
+---
+
+### D2. Describe the symptom, the root cause, and the fix — in that order
+
+When documenting a bug or pitfall, give future agents enough to recognise
+the situation before they understand it:
+
+1. **Symptom** — what they will observe (test failure message, unexpected output, error text)
+2. **Root cause** — why it happens (the non-obvious thing)
+3. **Fix / how to avoid** — the concrete thing to do differently
+
+If they can only read one line, it should be the symptom — that's how they
+will search for the problem.
+
+---
+
+### D3. Be specific — vague warnings don't help
+
+"Be careful with transactions" is noise.  This is signal:
+
+> "After any DML, call `conn.commit()` before passing the connection to
+> any function that calls `conn.execute('BEGIN')`, or you will get
+> `OperationalError: cannot start a transaction within a transaction`."
+
+Specific = actionable.  Vague = ignored.
+
+---
+
+### D4. Update this file as part of the task, not after it
+
+The right time to write a note is immediately after you hit the thing —
+while the symptom, the wrong path, and the fix are all fresh.  Notes written
+"later" are shorter, vaguer, and miss the detail that actually matters.
+
+**Convention:** If you open a PR that fixes a non-obvious bug or adds a
+non-obvious design decision, include the CLAUDE.md update in the same commit.
+
+---
+
+### D5. Keep entries atomic and self-contained
+
+Each numbered rule or retrospective entry should be readable without
+needing to read anything else in this file.  Don't write "as described
+in R3 above" — just repeat the relevant context.  This file will eventually
+be chunked and retrieved non-linearly (e.g., by a retrieval system feeding
+relevant context to an agent).  Entries that depend on each other become
+useless when retrieved in isolation.
+
+---
+
+### D6. Prefer concrete code snippets over abstract descriptions
+
+When a rule has a canonical form, show it:
+
+```python
+# Good — the pattern is unambiguous
+conn = sqlite3.connect(path)
+conn.row_factory = sqlite3.Row   # ← always, immediately after connect
+```
+
+One correct example is worth three paragraphs of description.
+
+---
+
+## Agent knowledge log
+
+This section is a running log maintained by agents across sessions.
+**If you discover something useful that isn't already captured above, add
+an entry here.**  You don't need to refactor it into the numbered rules
+above — just record it.  Curators can promote entries to the main sections
+over time.
+
+### Entry format
+
+```
+### [YYYY-MM-DD] <agent or session id> — <one-line summary>
+
+<what you found, why it matters, and any code snippet or symptom>
+```
+
+Entries should be short (3–10 lines is typical).  Favour concrete over
+general.  A half-formed note is better than no note.
+
+---
+
+### [2026-03-03] session_01GsTVzkLpCLVW99Bp42R7jF — CLAUDE.md itself is the most durable artifact
+
+When a session ends, the code, tests, and git history persist — but the
+agent's working memory does not.  CLAUDE.md is the only channel through
+which an agent can communicate with its successors.  Treat it accordingly:
+update it when you learn something, keep it honest, and write for the agent
+who knows nothing about this session rather than for the human who watched it.
+
+The retrospective section (R1–R5) was the most time-efficient thing written
+in this project: five mistakes, five precise root causes, five targeted
+avoidance rules.  Future agents who read it skip those mistakes entirely.
+That is the compounding return this file is designed to produce.
