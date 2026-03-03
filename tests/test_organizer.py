@@ -196,6 +196,57 @@ def test_organise_records_final_path(setup):
         assert Path(row["final_path"]).exists()
 
 
+def test_organise_xmp_includes_google_url_by_default(setup):
+    """The Google Photos URL should appear in XMP sidecars by default."""
+    source, dest, conn = setup
+    # Re-index with a URL in the sidecar
+    conn.execute(
+        "UPDATE photos SET google_url = 'https://photos.google.com/photo/TESTURL' "
+        "WHERE status = 'indexed'"
+    )
+    conn.commit()
+
+    organise(conn, dest, depth=FolderDepth.DAY, albums_in_library=True,
+             include_google_metadata=True)
+
+    xmps = list((dest / "Library").rglob("*.xmp"))
+    assert xmps, "No XMP sidecars found"
+    assert any("TESTURL" in x.read_text() for x in xmps)
+
+
+def test_organise_xmp_excludes_google_url_with_flag(setup):
+    """With include_google_metadata=False the URL must be absent from all XMP files."""
+    source, dest, conn = setup
+    conn.execute(
+        "UPDATE photos SET google_url = 'https://photos.google.com/photo/SECRETURL' "
+        "WHERE status = 'indexed'"
+    )
+    conn.commit()
+
+    organise(conn, dest, depth=FolderDepth.DAY, albums_in_library=True,
+             include_google_metadata=False)
+
+    xmps = list((dest / "Library").rglob("*.xmp"))
+    assert xmps, "No XMP sidecars found"
+    assert not any("SECRETURL" in x.read_text() for x in xmps)
+
+
+def test_organise_progress_callback_is_called(setup):
+    source, dest, conn = setup
+    calls = []
+    organise(
+        conn, dest,
+        depth=FolderDepth.DAY,
+        albums_in_library=True,
+        progress_cb=lambda name, idx, total: calls.append((name, idx, total)),
+    )
+    assert len(calls) > 0
+    # Each call should have a non-empty filename and sensible index
+    for name, idx, total in calls:
+        assert name
+        assert 1 <= idx <= total
+
+
 def test_organise_no_date_photo(tmp_path):
     """A photo with no timestamp goes into Library/No Date/."""
     source = tmp_path / "source"

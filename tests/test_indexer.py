@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from takeout_sort.db import open_db
-from takeout_sort.indexer import index_directory, index_zip
+from takeout_sort.indexer import compute_hashes, index_directory, index_zip
 
 
 # ---------------------------------------------------------------------------
@@ -192,3 +192,128 @@ def test_index_zip_bad_zip(tmp_path, db):
     bad.write_bytes(b"NOT A ZIP")
     n = index_zip(bad, db)
     assert n == 0
+
+
+# ---------------------------------------------------------------------------
+# compute_hashes tests
+# ---------------------------------------------------------------------------
+
+def _write_photo(path, content: bytes = b"\xff\xd8\xff" + b"\x00" * 100):
+    path.write_bytes(content)
+    return path
+
+
+def test_compute_hashes_marks_photos_as_indexed(tmp_path, db):
+    """After hashing, 'discovered' photos with no duplicates become 'indexed'."""
+    root = tmp_path / "Takeout" / "Google Photos" / "Photos from 2023"
+    root.mkdir(parents=True)
+    _write_photo(root / "unique.jpg")
+
+    index_directory(tmp_path, db)
+    compute_hashes(db)
+
+    row = db.execute(
+        "SELECT status, content_hash FROM photos WHERE original_filename = 'unique.jpg'"
+    ).fetchone()
+    assert row["status"] == "indexed"
+    assert row["content_hash"] is not None
+    assert len(row["content_hash"]) == 64  # hex SHA-256
+
+
+def test_compute_hashes_marks_duplicate_as_skipped(tmp_path, db):
+    """Two identical files → first is 'indexed', second is 'skipped'."""
+    year_dir = tmp_path / "Takeout" / "Google Photos" / "Photos from 2023"
+    year_dir.mkdir(parents=True)
+    album_dir = tmp_path / "Takeout" / "Google Photos" / "My Album"
+    album_dir.mkdir()
+    (album_dir / "metadata.json").write_text(json.dumps({
+        "title": "My Album", "description": "", "access": "private",
+        "date": {"timestamp": "0"}, "location": "",
+        "geoData": {"latitude": 0.0, "longitude": 0.0, "altitude": 0.0},
+    }))
+
+    # Identical content in both folders
+    payload = b"\xff\xd8\xff" + b"\x00" * 80
+    _write_photo(year_dir / "photo.jpg", payload)
+    _write_photo(album_dir / "photo.jpg", payload)
+
+    index_directory(tmp_path, db)
+    compute_hashes(db)
+
+    statuses = [
+        r["status"]
+        for r in db.execute(
+            "SELECT status FROM photos WHERE original_filename = 'photo.jpg'"
+        ).fetchall()
+    ]
+    assert "indexed" in statuses
+    assert "skipped" in statuses
+
+
+def test_compute_hashes_transfers_album_membership(tmp_path, db):
+    """
+    When the year-folder copy is canonical and the album copy is skipped,
+    the album membership must be transferred to the canonical row so that
+    the organiser can create album links.
+    """
+    year_dir = tmp_path / "Takeout" / "Google Photos" / "Photos from 2023"
+    year_dir.mkdir(parents=True)
+    album_dir = tmp_path / "Takeout" / "Google Photos" / "My Album"
+    album_dir.mkdir()
+    (album_dir / "metadata.json").write_text(json.dumps({
+        "title": "My Album", "description": "", "access": "private",
+        "date": {"timestamp": "0"}, "location": "",
+        "geoData": {"latitude": 0.0, "longitude": 0.0, "altitude": 0.0},
+    }))
+
+    payload = b"\xff\xd8\xff" + b"\x00" * 80
+    _write_photo(year_dir / "photo.jpg", payload)
+    _write_photo(album_dir / "photo.jpg", payload)
+
+    index_directory(tmp_path, db)
+    compute_hashes(db)
+
+    canonical = db.execute(
+        "SELECT id FROM photos WHERE status = 'indexed' AND original_filename = 'photo.jpg'"
+    ).fetchone()
+    assert canonical is not None, "Expected exactly one canonical (indexed) row"
+
+    album_links = db.execute(
+        "SELECT * FROM photo_albums WHERE photo_id = ?", (canonical["id"],)
+    ).fetchall()
+    assert len(album_links) == 1, (
+        "Album membership should have been transferred to the canonical row"
+    )
+
+
+def test_compute_hashes_skips_missing_files(tmp_path, db):
+    """If a file has been removed after indexing, compute_hashes skips it gracefully."""
+    root = tmp_path / "Takeout" / "Google Photos" / "Photos from 2023"
+    root.mkdir(parents=True)
+    photo = root / "vanished.jpg"
+    _write_photo(photo)
+
+    index_directory(tmp_path, db)
+    photo.unlink()  # remove the file before hashing
+
+    # Should not raise
+    compute_hashes(db)
+
+    row = db.execute(
+        "SELECT status FROM photos WHERE original_filename = 'vanished.jpg'"
+    ).fetchone()
+    # Still 'discovered' — hash step didn't crash, just skipped
+    assert row["status"] == "discovered"
+
+
+def test_compute_hashes_calls_progress_callback(tmp_path, db):
+    root = tmp_path / "Takeout" / "Google Photos" / "Photos from 2023"
+    root.mkdir(parents=True)
+    _write_photo(root / "cb_photo.jpg")
+
+    index_directory(tmp_path, db)
+
+    calls = []
+    compute_hashes(db, progress_cb=lambda name, pid: calls.append(name))
+    assert len(calls) >= 1
+    assert "cb_photo.jpg" in calls

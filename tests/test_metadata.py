@@ -9,6 +9,8 @@ import pytest
 from takeout_sort.metadata import (
     GeoPoint,
     PhotoMeta,
+    apply_metadata,
+    parse_album_json,
     parse_google_json,
     write_xmp_sidecar,
 )
@@ -172,3 +174,131 @@ def test_write_xmp_sidecar_no_geo(tmp_path):
     xmp = write_xmp_sidecar(photo, meta)
     content = xmp.read_text()
     assert "GPSLatitude" not in content
+
+
+def test_write_xmp_sidecar_includes_google_url_by_default(tmp_path):
+    photo = tmp_path / "photo.jpg"
+    photo.write_bytes(b"FAKE")
+    meta = PhotoMeta(google_url="https://photos.google.com/photo/abc123")
+    xmp = write_xmp_sidecar(photo, meta)
+    assert "abc123" in xmp.read_text()
+
+
+def test_write_xmp_sidecar_excludes_google_url_when_flag_false(tmp_path):
+    photo = tmp_path / "photo.jpg"
+    photo.write_bytes(b"FAKE")
+    meta = PhotoMeta(google_url="https://photos.google.com/photo/abc123")
+    xmp = write_xmp_sidecar(photo, meta, include_google_metadata=False)
+    assert "abc123" not in xmp.read_text()
+
+
+def test_write_xmp_sidecar_standard_fields_present_regardless_of_flag(tmp_path):
+    """Date, GPS, title, description must appear even with --no-google-metadata."""
+    photo = tmp_path / "photo.jpg"
+    photo.write_bytes(b"FAKE")
+    meta = PhotoMeta(
+        title="My Photo",
+        taken_ts=1672531200,
+        geo=GeoPoint(latitude=48.8566, longitude=2.3522),
+        google_url="https://photos.google.com/photo/abc123",
+    )
+    xmp = write_xmp_sidecar(photo, meta, include_google_metadata=False)
+    content = xmp.read_text()
+    assert "2023" in content            # date present
+    assert "GPSLatitude" in content     # geo present
+    assert "My Photo" in content        # title present
+    assert "abc123" not in content      # URL absent
+
+
+# ---------------------------------------------------------------------------
+# PhotoMeta edge cases
+# ---------------------------------------------------------------------------
+
+def test_photometa_taken_dt_none():
+    meta = PhotoMeta(taken_ts=None)
+    assert meta.taken_dt is None
+
+
+def test_photometa_best_ts_both_none():
+    meta = PhotoMeta(taken_ts=None, creation_ts=None)
+    assert meta.best_ts is None
+
+
+# ---------------------------------------------------------------------------
+# parse_album_json
+# ---------------------------------------------------------------------------
+
+def test_parse_album_json_basic(tmp_path):
+    data = {
+        "title": "Summer Holiday",
+        "description": "Beach pics",
+        "access": "private",
+        "date": {"timestamp": "1672531200"},
+        "location": "Spain",
+        "geoData": {"latitude": 0.0, "longitude": 0.0, "altitude": 0.0},
+    }
+    p = tmp_path / "metadata.json"
+    p.write_text(json.dumps(data))
+    result = parse_album_json(p)
+    assert result["title"] == "Summer Holiday"
+    assert result["location"] == "Spain"
+
+
+def test_parse_album_json_missing_file(tmp_path):
+    result = parse_album_json(tmp_path / "nonexistent.json")
+    assert result == {}
+
+
+def test_parse_album_json_corrupt(tmp_path):
+    p = tmp_path / "metadata.json"
+    p.write_text("NOT JSON")
+    result = parse_album_json(p)
+    assert result == {}
+
+
+# ---------------------------------------------------------------------------
+# embed_exif
+# ---------------------------------------------------------------------------
+
+def test_embed_exif_unsupported_format_returns_false(tmp_path):
+    from takeout_sort.metadata import embed_exif
+    # PNG is not supported by piexif
+    png = tmp_path / "photo.png"
+    png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 50)
+    meta = PhotoMeta(taken_ts=1672531200)
+    result = embed_exif(png, meta)
+    assert result is False
+
+
+def test_embed_exif_heic_returns_false(tmp_path):
+    from takeout_sort.metadata import embed_exif
+    heic = tmp_path / "photo.heic"
+    heic.write_bytes(b"FAKE HEIC DATA")
+    meta = PhotoMeta(taken_ts=1672531200)
+    result = embed_exif(heic, meta)
+    assert result is False
+
+
+# ---------------------------------------------------------------------------
+# apply_metadata
+# ---------------------------------------------------------------------------
+
+def test_apply_metadata_creates_xmp(tmp_path):
+    photo = tmp_path / "photo.jpg"
+    photo.write_bytes(b"FAKE")
+    meta = PhotoMeta(taken_ts=1672531200)
+    apply_metadata(photo, meta)
+    assert photo.with_suffix(".xmp").exists()
+
+
+def test_apply_metadata_no_google_metadata_flag(tmp_path):
+    photo = tmp_path / "photo.jpg"
+    photo.write_bytes(b"FAKE")
+    meta = PhotoMeta(
+        taken_ts=1672531200,
+        google_url="https://photos.google.com/photo/secret",
+    )
+    apply_metadata(photo, meta, include_google_metadata=False)
+    xmp = photo.with_suffix(".xmp")
+    assert xmp.exists()
+    assert "secret" not in xmp.read_text()
