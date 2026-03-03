@@ -479,3 +479,83 @@ you try to log in programmatically.  Instead:
 
 Avoid storing credentials in code or config files.  Let the human do the login
 once; automate everything after authentication.
+
+---
+
+### 16. End-to-end tests catch interaction bugs that unit tests miss
+
+Unit tests verify individual functions.  End-to-end tests verify that the
+pieces work together.  The most valuable bug caught during this project
+(`--no-albums-in-library` silently not working) was only caught by a test
+that ran the full pipeline: index → hash → organise → assert file location.
+
+No unit test on `compute_hashes()` alone would have revealed that the
+album membership transfer was missing, because no single unit knew it was
+responsible for that cross-function contract.
+
+**Rule:** For any feature that spans multiple modules, write at least one
+test that exercises the full path from input to final observable output.
+These tests are slower but catch the bugs that matter most to users.
+
+---
+
+### 17. `sqlite3.Row` enables named column access — always set it
+
+By default, Python's `sqlite3` returns rows as plain tuples.  Setting:
+
+```python
+conn.row_factory = sqlite3.Row
+```
+
+lets you access columns by name (`row["status"]`, `row["source_path"]`)
+instead of by index (`row[2]`).  This makes code far more readable and
+robust against schema changes that add/reorder columns.  Set it immediately
+after `connect()` and never use index-based row access.
+
+---
+
+### 18. `pyproject.toml` build-backend path is easy to get wrong
+
+The correct `setuptools` build backend identifier is:
+
+```toml
+[build-system]
+build-backend = "setuptools.build_meta"
+```
+
+A common mistake is `"setuptools.backends.legacy:build"` (which does not
+exist) or `"setuptools:build_meta"` (wrong separator).  If `pip install -e .`
+fails with "Cannot import … build backend", check this line first.
+
+---
+
+### 19. Use `pytest`'s `tmp_path` fixture — never `tempfile` directly in tests
+
+`pytest` provides `tmp_path` (a `pathlib.Path` to a fresh temp directory,
+unique per test, automatically cleaned up) as a built-in fixture.  Using it
+gives you:
+
+- Automatic cleanup even on test failure.
+- `pathlib.Path` API (not raw strings).
+- A consistent pattern every pytest user recognises.
+
+Prefer `tmp_path / "subdir" / "file.txt"` over `tempfile.mkdtemp()` in any
+pytest-based test suite.
+
+---
+
+### 20. When a function can silently no-op, make the no-op observable
+
+`INSERT OR IGNORE` silently does nothing when the row already exists.
+`os.link` silently does nothing if the link already exists (on some platforms).
+`shutil.copy2` silently overwrites.
+
+In all these cases, the caller should be able to detect what happened — via
+a return value, a log message, or an exception.  Silent no-ops cause subtle
+bugs: the developer assumes the operation succeeded, but the data was never
+written (or was overwritten).
+
+For upserts: return the existing row's id (or a sentinel like `-1`) so the
+caller knows whether an insert or an ignore occurred.  Log at DEBUG level
+which branch was taken.  This costs almost nothing and saves hours of
+debugging.
