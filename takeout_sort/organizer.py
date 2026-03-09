@@ -175,15 +175,19 @@ def _organise_photo(
         _set_status(conn, photo_id, "error")
         return
 
-    # Write metadata sidecar + embed EXIF.
-    apply_metadata(primary_dst, meta, include_google_metadata=include_google_metadata)
-
-    # Record final path.
+    # Record the move immediately — the file's location is the critical outcome.
+    # Metadata writing below is best-effort; if it fails, the photo is not lost.
     conn.execute(
         "UPDATE photos SET final_path = ?, status = 'organised', updated_at = datetime('now') WHERE id = ?",
         (str(primary_dst), photo_id),
     )
     conn.commit()
+
+    # Write metadata sidecar + embed EXIF.
+    try:
+        apply_metadata(primary_dst, meta, include_google_metadata=include_google_metadata)
+    except Exception:
+        pass  # Non-fatal: photo is at primary_dst; sidecar can be written on re-run.
 
     # If we need album links AND the primary went to Library, create links in Albums/.
     if albums_in_library and in_album:

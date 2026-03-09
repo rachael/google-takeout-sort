@@ -770,6 +770,51 @@ general.  A half-formed note is better than no note.
 
 ---
 
+### [2026-03-09] session_01GsTVzkLpCLVW99Bp42R7jF — NEVER call delete_from_google_photos.py during automation
+
+`scripts/delete_from_google_photos.py` permanently deletes photos from Google Photos via browser
+automation.  It is a **standalone manual tool** — no `takeout-sort` CLI command calls it as a
+side-effect.  Future agents must not:
+- Call it as part of an automated pipeline.
+- Add a `--force` / `--yes` / `--no-confirm` flag to bypass the `yes` prompt.
+- Run it without the user explicitly requesting deletion *in that session*.
+
+The existing safeguards are already complete and must not be weakened:
+1. The user must type exactly `"yes"` to proceed (any other input aborts).
+2. EOF / pipe input (CI, non-interactive shell) aborts cleanly.
+3. `--dry-run` is enforced by `continue` before any browser action runs — no code path bypasses it.
+
+If you want to verify what *would* be deleted, always use `--dry-run` and show the output to the user first.
+
+---
+
+### [2026-03-09] session_01GsTVzkLpCLVW99Bp42R7jF — Post-move operations must be best-effort
+
+After `safe_move()` succeeds, the file is at its destination.  **Update the DB status to
+`'organised'` immediately after the move**, before doing anything else.  All subsequent operations
+(XMP sidecar writing, EXIF embedding, album linking) are best-effort: wrap them in try-except,
+log failures, but do not roll back the status.
+
+Rationale: if a post-move step raises (disk full, permission error, piexif bug), the file is safe
+at its new location.  Leaving status as `'indexed'` causes the organiser to retry the move on the
+next run, but the source file is gone — `safe_move` fails, status becomes `'error'`, and the photo
+is stranded with an incorrect DB record even though it's physically fine.
+
+The canonical pattern:
+```python
+safe_move(src, primary_dst)          # raises → caller sets status='error', returns
+# Move succeeded — commit location immediately.
+conn.execute("UPDATE photos SET final_path = ?, status = 'organised' ... WHERE id = ?", ...)
+conn.commit()
+# Now do best-effort post-processing.
+try:
+    apply_metadata(primary_dst, meta)
+except Exception:
+    pass  # non-fatal; photo is safe at primary_dst
+```
+
+---
+
 ### [2026-03-03] session_01GsTVzkLpCLVW99Bp42R7jF — CLAUDE.md itself is the most durable artifact
 
 When a session ends, the code, tests, and git history persist — but the

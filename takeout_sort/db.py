@@ -181,6 +181,7 @@ def get_photo_by_hash(conn: sqlite3.Connection, content_hash: str) -> sqlite3.Ro
 
 
 def count_by_status(conn: sqlite3.Connection, table: str = "photos") -> dict[str, int]:
+    assert table in ("photos", "albums"), f"Unexpected table: {table!r}"
     rows = conn.execute(
         f"SELECT status, COUNT(*) AS n FROM {table} GROUP BY status"
     ).fetchall()
@@ -193,12 +194,17 @@ def iter_photos(
     batch_size: int = 500,
 ):
     """Yield rows from the photos table, optionally filtered by status, in batches."""
-    where = f"WHERE status = '{status}'" if status else ""
     offset = 0
     while True:
-        rows = conn.execute(
-            f"SELECT * FROM photos {where} LIMIT {batch_size} OFFSET {offset}"
-        ).fetchall()
+        if status:
+            rows = conn.execute(
+                f"SELECT * FROM photos WHERE status = ? LIMIT {batch_size} OFFSET {offset}",
+                (status,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                f"SELECT * FROM photos LIMIT {batch_size} OFFSET {offset}",
+            ).fetchall()
         if not rows:
             break
         yield from rows
